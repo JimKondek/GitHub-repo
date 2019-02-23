@@ -9,7 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sqlalchemy import create_engine
 
-engine = create_engine('postgresql://postgres:budman01@localhost:5432/news')
+engine = create_engine('postgresql://postgres:xxxxxxxx@localhost:5432/news')
 
 query = """
     select date(time),
