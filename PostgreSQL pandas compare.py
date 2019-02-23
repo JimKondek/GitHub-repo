@@ -19,7 +19,7 @@ from sqlalchemy import create_engine
 def get_query(query):
     db = psycopg2.connect(dbname='news',
                           user='postgres',
-                          password='budman01',
+                          password='xxxxxxxx',
                           host='localhost',
                           port=5432)
     c = db.cursor()
