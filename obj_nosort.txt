@@ -1,0 +1,311 @@
+Performance Analysis Example: Using Indexes on Range Queries (Part 2)
+---------------------------------------------------------------------
+
+In this example I create a table whose rows are physically written onto segment blocks in no particular order, and I test whether the Oracle optimizer might still use indexes on this table in range queries on the indexed column.  As in the previous example, I am using Oracle 18c in a Windows 10 environment.  The account I'm using has DBA privileges.
+
+Once again I extract selected columns from the DBA_OBJECTS table.  This time there is no ORDER BY clause in the SELECT statement.  I also build an index on the OBJECT_NAME column, as before.
+```sql
+SQL> CREATE TABLE obj_nosort AS
+  2    SELECT OWNER,
+  3           OBJECT_NAME,
+  4           SUBOBJECT_NAME,
+  5           OBJECT_ID,
+  6           DATA_OBJECT_ID,
+  7           OBJECT_TYPE,
+  8           CREATED,
+  9           LAST_DDL_TIME,
+ 10           TIMESTAMP,
+ 11           STATUS
+ 12    FROM dba_objects;
+
+Table created.
+
+SQL>
+SQL> CREATE INDEX ix_obj_nosort on obj_nosort (object_name);
+
+Index created.
+
+SQL>
+SQL> select clustering_factor from user_indexes;
+
+CLUSTERING_FACTOR
+-----------------
+            52676
+```
+As expected, the clustering factor of the index is much larger than before.  The value approaches the total number of rows in the table.  The optimizer will probably not use this index for any range queries on the OBJECT_NAME column if histograms on the column do not exist.  As before, the statistics automatically gathered when the table is created do not include histograms.
+```sql
+SQL>
+SQL> SELECT column_name, num_distinct, histogram, last_analyzed, num_buckets, notes
+  2  FROM   user_tab_col_statistics;
+
+COLUMN_NAME                    NUM_DISTINCT HISTOGRAM       LAST_ANALYZED       NUM_BUCKETS NOTES
+------------------------------ ------------ --------------- ------------------- ----------- -----------------------------------
+OWNER                                    27 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+OBJECT_NAME                           60524 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+SUBOBJECT_NAME                          363 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+OBJECT_ID                             72912 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+DATA_OBJECT_ID                         5841 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+OBJECT_TYPE                              45 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+CREATED                                1651 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+LAST_DDL_TIME                          1895 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+TIMESTAMP                              1878 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+STATUS                                    1 NONE            03-21-2019 18:14:00           1 STATS_ON_LOAD
+
+10 rows selected.
+
+SQL>
+```
+Let's rerun the same two queries we used in Part 1 and see if the optimizer utilizes the index this time.
+```sql
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_nosort
+  4  WHERE object_name LIKE  'm%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+          5     167554
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+-------------------------------------------------------------------------------------------------------------------------------------------
+SQL_ID  9hguub01kvtzh, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_nosort WHERE object_name LIKE  'm%'
+
+Plan hash value: 2471024320
+
+---------------------------------------------------------------------------------
+| Id  | Operation          | Name       | Rows  | Bytes | Cost (%CPU)| Time     |
+---------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT   |            |       |       |   295 (100)|          |
+|   1 |  SORT AGGREGATE    |            |     1 |    40 |            |          |
+|*  2 |   TABLE ACCESS FULL| OBJ_NOSORT |  1454 | 58160 |   295   (1)| 00:00:01 |
+---------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   2 - filter("OBJECT_NAME" LIKE 'm%')
+
+
+20 rows selected.
+
+SQL>
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_nosort
+  4  WHERE object_name LIKE 'j%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+       9972  432667620
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+-------------------------------------------------------------------------------------------------------------------------------------------
+SQL_ID  bbcmp85k2hnr3, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_nosort WHERE object_name LIKE 'j%'
+
+Plan hash value: 2471024320
+
+---------------------------------------------------------------------------------
+| Id  | Operation          | Name       | Rows  | Bytes | Cost (%CPU)| Time     |
+---------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT   |            |       |       |   295 (100)|          |
+|   1 |  SORT AGGREGATE    |            |     1 |    40 |            |          |
+|*  2 |   TABLE ACCESS FULL| OBJ_NOSORT |  1454 | 58160 |   295   (1)| 00:00:01 |
+---------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   2 - filter("OBJECT_NAME" LIKE 'j%')
+
+
+20 rows selected.
+```
+We see that, in range queries that access either a few rows or many rows, the optimizer ignores the index and chooses to do a table scan, since the clustering factor is quite large and there are as yet no histograms on the OBJECT_NAME column.
+
+As before, the database keeps track of column query usage in the SYS.COL_USAGE$ table.  Let's flush the database monitoring info to disk and verify this.
+```sql
+SQL>
+SQL> exec dbms_stats.flush_database_monitoring_info
+
+PL/SQL procedure successfully completed.
+
+SQL>
+SQL> select * from sys.col_usage$ where obj# = (select object_id from user_objects where object_name = 'OBJ_NOSORT');
+
+      OBJ#    INTCOL# EQUALITY_PREDS EQUIJOIN_PREDS NONEQUIJOIN_PREDS RANGE_PREDS LIKE_PREDS NULL_PREDS TIMESTAMP                FLAGS
+---------- ---------- -------------- -------------- ----------------- ----------- ---------- ---------- ------------------- ----------
+     77872          2              0              0                 0           0          1          0 03-21-2019 18:14:02         16
+
+SQL>
+```
+If we now run DBMS_STATS to collect table statistics, we should still get histograms on the OBJECT_NAME column as before, since the data in this table is the same as in the previous example.
+```sql
+SQL>
+SQL> exec dbms_stats.gather_table_stats(user, 'OBJ_NOSORT')
+
+PL/SQL procedure successfully completed.
+
+SQL>
+SQL> alter system flush shared_pool;
+
+System altered.
+
+SQL>
+SQL> SELECT column_name, num_distinct, histogram, last_analyzed, num_buckets, notes
+  2  FROM   user_tab_col_statistics;
+
+COLUMN_NAME                    NUM_DISTINCT HISTOGRAM       LAST_ANALYZED       NUM_BUCKETS NOTES
+------------------------------ ------------ --------------- ------------------- ----------- -----------------------------------
+OWNER                                    27 NONE            03-21-2019 18:14:02           1
+OBJECT_NAME                           60524 HYBRID          03-21-2019 18:14:02         254
+SUBOBJECT_NAME                          363 NONE            03-21-2019 18:14:02           1
+OBJECT_ID                             72912 NONE            03-21-2019 18:14:02           1
+DATA_OBJECT_ID                         5841 NONE            03-21-2019 18:14:02           1
+OBJECT_TYPE                              45 NONE            03-21-2019 18:14:02           1
+CREATED                                1651 NONE            03-21-2019 18:14:02           1
+LAST_DDL_TIME                          1895 NONE            03-21-2019 18:14:02           1
+TIMESTAMP                              1878 NONE            03-21-2019 18:14:02           1
+STATUS                                    1 NONE            03-21-2019 18:14:02           1
+
+10 rows selected.
+```
+The histograms do in fact get created.  Let's run the same two queries as before, and see if the results are different.  (I flushed the buffer pool so that the optimizer has to re-parse the queries and pick up the new statistics.)
+```sql
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_nosort
+  4  WHERE object_name LIKE  'm%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+          5     167554
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+-------------------------------------------------------------------------------------------------------------------------------------------
+SQL_ID  9hguub01kvtzh, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_nosort WHERE object_name LIKE  'm%'
+
+Plan hash value: 348777507
+
+------------------------------------------------------------------------------------------------------
+| Id  | Operation                            | Name          | Rows  | Bytes | Cost (%CPU)| Time     |
+------------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                     |               |       |       |    43 (100)|          |
+|   1 |  SORT AGGREGATE                      |               |     1 |    40 |            |          |
+|   2 |   TABLE ACCESS BY INDEX ROWID BATCHED| OBJ_NOSORT    |    55 |  2200 |    43   (0)| 00:00:01 |
+|*  3 |    INDEX RANGE SCAN                  | IX_OBJ_NOSORT |    55 |       |     3   (0)| 00:00:01 |
+------------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - access("OBJECT_NAME" LIKE 'm%')
+       filter("OBJECT_NAME" LIKE 'm%')
+
+
+22 rows selected.
+
+SQL>
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_nosort
+  4  WHERE object_name LIKE 'j%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+       9972  432667620
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+-------------------------------------------------------------------------------------------------------------------------------------------
+SQL_ID  bbcmp85k2hnr3, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_nosort WHERE object_name LIKE 'j%'
+
+Plan hash value: 2471024320
+
+---------------------------------------------------------------------------------
+| Id  | Operation          | Name       | Rows  | Bytes | Cost (%CPU)| Time     |
+---------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT   |            |       |       |   295 (100)|          |
+|   1 |  SORT AGGREGATE    |            |     1 |    40 |            |          |
+|*  2 |   TABLE ACCESS FULL| OBJ_NOSORT | 10144 |   396K|   295   (1)| 00:00:01 |
+---------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   2 - filter("OBJECT_NAME" LIKE 'j%')
+
+
+20 rows selected.
+```
+The query that accesses only five rows now will use the index.  The cost to do so is below the cost of doing a table scan.
+
+So how much worse than a table scan would it be to use the index on the query that accesses nearly ten thousand rows?  Let's find out by using a hint to force the optimizer to use the index.
+```sql
+SQL>
+SQL> SELECT /*+ index(obj_nosort) */ count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_nosort
+  4  WHERE object_name LIKE 'j%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+       9972  432667620
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+-------------------------------------------------------------------------------------------------------------------------------------------
+SQL_ID  969u1f36qyg4n, child number 0
+-------------------------------------
+SELECT /*+ index(obj_nosort) */ count(*) AS occurrences,
+sum(object_id) AS total FROM obj_nosort WHERE object_name LIKE 'j%'
+
+Plan hash value: 348777507
+
+------------------------------------------------------------------------------------------------------
+| Id  | Operation                            | Name          | Rows  | Bytes | Cost (%CPU)| Time     |
+------------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                     |               |       |       |  7401 (100)|          |
+|   1 |  SORT AGGREGATE                      |               |     1 |    40 |            |          |
+|   2 |   TABLE ACCESS BY INDEX ROWID BATCHED| OBJ_NOSORT    | 10144 |   396K|  7401   (1)| 00:00:01 |
+|*  3 |    INDEX RANGE SCAN                  | IX_OBJ_NOSORT | 10144 |       |    67   (0)| 00:00:01 |
+------------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - access("OBJECT_NAME" LIKE 'j%')
+       filter("OBJECT_NAME" LIKE 'j%')
+
+
+22 rows selected.
+
+SQL>
+```
+The cost of using the index is far worse than when doing a table scan.
+
+This example shows how an index can still be useful for range queries on a given column even when the rows are not physically sorted on the table blocks on that column.  For example, it's likely that a table containing log data with a timestamp of each row's insertion would be more or less physically sorted in timestamp order, yet an index on any other column might still be used by the optimizer in range queries on that column, as long as histograms indicate that the query would not need to access many rows due to data skew.

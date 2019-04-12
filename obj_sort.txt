@@ -1,0 +1,441 @@
+Performance Analysis Example: Using Indexes on Range Queries (Part 1)
+---------------------------------------------------------------------
+
+
+In this file I create a table whose rows are written to segment blocks in physically sorted order, and how this can affect access to the table when we specify the sort column in a WHERE clause, especially in range queries.  This example uses Oracle 18c in a Windows 10 environment.  The account I'm using has DBA privileges.
+
+In this example I am going to work with the OBJECT_NAME column in a table extract of DBA_OBJECTS.  (Though the object name values are not unique, there are not many repeating values.)  In my test environment, the DBA_OBJECTS table contains about 73000 rows.
+
+```sql
+SQL> select count(*) from dba_objects;
+
+  COUNT(*)
+----------
+     72909
+```
+Let's suppose we have a business need to query the value of the first column of each object name.  The following lists all distinct values in the first column of all object names, sorted in descending order by occurrences.
+```sql
+SQL> select substr(object_name, 1, 1), count(*)
+  2  from dba_objects
+  3  group by substr(object_name, 1, 1)
+  4  order by 2 desc;
+
+SUBS   COUNT(*)
+---- ----------
+c         14906
+o         12603
+j          9972
+s          6918
+D          4780
+S          4174
+A          2676
+C          2649
+V          1766
+G          1571
+W          1439
+K          1438
+U          1283
+O          1037
+L           943
+I           886
+H           774
+E           567
+X           544
+R           458
+M           352
+P           351
+_           180
+T           175
+F           119
+J           109
+p           102
+N            71
+B            45
+Q            17
+m             5
+Y             3
+l             2
+d             2
+
+34 rows selected.
+```
+So there are 34 distinct values.  We see that some values occur much more often than others.  Here I create a table that contains selected columns from the DBA_OBJECTS table, then create an index on the OBJECT_NAME column.
+```sql
+SQL> CREATE TABLE obj_sort AS
+  2    SELECT OWNER,
+  3           OBJECT_NAME,
+  4           SUBOBJECT_NAME,
+  5           OBJECT_ID,
+  6           DATA_OBJECT_ID,
+  7           OBJECT_TYPE,
+  8           CREATED,
+  9           LAST_DDL_TIME,
+ 10           TIMESTAMP,
+ 11           STATUS
+ 12    FROM dba_objects order by object_name;
+
+Table created.
+
+SQL>
+SQL> CREATE INDEX ix_obj_sort on obj_sort (object_name);
+
+Index created.
+```
+Starting with Oracle 12c, a CREATE TABLE AS SELECT statement will automatically gather some statistics, eliminating the need to run DBMS_STATS immediately after table creation.  Here is some information from USER_TAB_COL_STATISTICS that resulted from the automatic statistics gathering.  Note the value of the NOTES column.
+```sql
+SQL> SELECT column_name, num_distinct, histogram, last_analyzed, num_buckets, notes
+  2  FROM   user_tab_col_statistics;
+
+COLUMN_NAME                    NUM_DISTINCT HISTOGRAM       LAST_ANALYZED       NUM_BUCKETS NOTES
+------------------------------ ------------ --------------- ------------------- ----------- -------------------
+OWNER                                    27 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+OBJECT_NAME                           60524 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+SUBOBJECT_NAME                          360 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+OBJECT_ID                             72909 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+DATA_OBJECT_ID                         5838 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+OBJECT_TYPE                              45 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+CREATED                                1649 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+LAST_DDL_TIME                          1892 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+TIMESTAMP                              1875 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+STATUS                                    1 NONE            03-19-2019 08:46:39           1 STATS_ON_LOAD
+
+10 rows selected.
+```
+In my extract, the SELECT statement in the CREATE TABLE AS SELECT statement contains an ORDER BY clause.  As the rows are written, they are being physically placed on the table segment blocks in ascending order.  (This is more or less true, the exceptions need not concern us here.)
+
+Here I query the clustering factor of the index I created on the OBJECT_NAME column.
+```sql
+SQL> select clustering_factor from user_indexes where index_name = 'IX_OBJ_SORT';
+
+CLUSTERING_FACTOR
+-----------------
+             1048
+```
+The value is close to the number of physical blocks used by the table segment:
+```sql
+SQL> select blocks from user_segments
+  2  where segment_name='OBJ_SORT';
+
+    BLOCKS
+----------
+      1152
+```
+When parsing a range query based on the index's columns, the Oracle optimizer will more likely use that index if the clustering factor is close to the number of physical blocks.  Conversely, the closer the clustering factor is to the total number of rows in the table, the more likely the optimizer will choose to use a table scan instead of the index.
+
+As queries are run, the database tracks table column access and the kinds of access in the system view SYS.COL_USAGE$.  The DBMS_STATS routine uses the information in SYS.COL_USAGE$ to determine whether to create histograms on certain columns.  Since we haven't yet run any queries on the OBJ_SORT table, there will be no information in SYS.COL_USAGE$ regarding it.
+```sql  
+SQL> select * from sys.col_usage$
+  2  where obj# = (select object_id from user_objects where object_name = 'OBJ_SORT');
+
+no rows selected
+```
+Here I run DBMS_STATS on the OBJ_SORT table, even though statistics already exist and we haven't queried the table yet.  I do this to show that there is essentially no change from the statistics gathered when the table was created.
+```sql
+SQL> exec dbms_stats.gather_table_stats(user, 'OBJ_SORT')
+
+PL/SQL procedure successfully completed.
+
+SQL> SELECT column_name, num_distinct, histogram, last_analyzed, num_buckets, notes
+  2  FROM   user_tab_col_statistics;
+
+COLUMN_NAME                    NUM_DISTINCT HISTOGRAM       LAST_ANALYZED       NUM_BUCKETS NOTES
+------------------------------ ------------ --------------- ------------------- ----------- -------------------------
+OWNER                                    27 NONE            03-19-2019 08:50:25           1
+OBJECT_NAME                           60524 NONE            03-19-2019 08:50:25           1
+SUBOBJECT_NAME                          360 NONE            03-19-2019 08:50:25           1
+OBJECT_ID                             72909 NONE            03-19-2019 08:50:25           1
+DATA_OBJECT_ID                         5838 NONE            03-19-2019 08:50:25           1
+OBJECT_TYPE                              45 NONE            03-19-2019 08:50:25           1
+CREATED                                1649 NONE            03-19-2019 08:50:25           1
+LAST_DDL_TIME                          1892 NONE            03-19-2019 08:50:25           1
+TIMESTAMP                              1875 NONE            03-19-2019 08:50:25           1
+STATUS                                    1 NONE            03-19-2019 08:50:25           1
+
+10 rows selected.
+```
+Note that no histograms have been created yet for any of the columns in OBJ_SORT, since the value of NUM_BUCKETS column is 1 in all cases.  (Also note that the values in the NOTES column have been set to null.)  Let's now query the data, specifying a value for the first column of the OBJECT_NAME column that occurs only a handful of times.  (I specify the sum(object_id) column so that the optimizer has to physically access the table to satisfy the query, since the OBJECT_ID column is not part of the index.)
+```sql
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_sort
+  4  WHERE object_name LIKE 'm%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+          5     167554
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+----------------------------------------------------------------------------------------------------------
+SQL_ID  8cpfzmfj89nf7, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_sort WHERE object_name LIKE 'm%'
+
+Plan hash value: 1800199784
+
+----------------------------------------------------------------------------------------------------
+| Id  | Operation                            | Name        | Rows  | Bytes | Cost (%CPU)| Time     |
+----------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                     |             |       |       |    33 (100)|          |
+|   1 |  SORT AGGREGATE                      |             |     1 |    40 |            |          |
+|   2 |   TABLE ACCESS BY INDEX ROWID BATCHED| OBJ_SORT    |  1454 | 58160 |    33   (0)| 00:00:01 |
+|*  3 |    INDEX RANGE SCAN                  | IX_OBJ_SORT |  1454 |       |    12   (0)| 00:00:01 |
+----------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - access("OBJECT_NAME" LIKE 'm%')
+       filter("OBJECT_NAME" LIKE 'm%')
+
+
+22 rows selected.
+```
+The execution plan shows that the optimizer chose to use the index, even though there are no histograms on the OBJECT_NAME column, likely because of the low clustering factor.  Let's run a similar query, this time specifying a value for the first column of OBJECT_NAME that occurs frequently.
+```sql
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_sort
+  4  WHERE object_name LIKE 'j%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+       9972  432667620
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+----------------------------------------------------------------------------------------------------------
+SQL_ID  4r61b1prwj0zw, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_sort WHERE object_name LIKE 'j%'
+
+Plan hash value: 1800199784
+
+----------------------------------------------------------------------------------------------------
+| Id  | Operation                            | Name        | Rows  | Bytes | Cost (%CPU)| Time     |
+----------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                     |             |       |       |    33 (100)|          |
+|   1 |  SORT AGGREGATE                      |             |     1 |    40 |            |          |
+|   2 |   TABLE ACCESS BY INDEX ROWID BATCHED| OBJ_SORT    |  1454 | 58160 |    33   (0)| 00:00:01 |
+|*  3 |    INDEX RANGE SCAN                  | IX_OBJ_SORT |  1454 |       |    12   (0)| 00:00:01 |
+----------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - access("OBJECT_NAME" LIKE 'j%')
+       filter("OBJECT_NAME" LIKE 'j%')
+
+
+22 rows selected.
+```
+Here too we see the optimizer chooses to use the index.  In the execution plan, we see that the "Rows", "Bytes" and "Cost" values are the same as with the previous query, so the optimizer is not yet aware of any data skew for this column.  The next query touches every row in the OBJ_SORT table, resulting in a table scan.
+```sql
+SQL> SELECT sum(object_id) AS sum
+  2  FROM obj_sort;
+
+       SUM
+----------
+2674448205
+
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+----------------------------------------------------------------------------------------------------------
+SQL_ID  dnw0psrc2d2xy, child number 0
+-------------------------------------
+SELECT sum(object_id) AS sum FROM obj_sort
+
+Plan hash value: 1192548993
+
+-------------------------------------------------------------------------------
+| Id  | Operation          | Name     | Rows  | Bytes | Cost (%CPU)| Time     |
+-------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT   |          |       |       |   295 (100)|          |
+|   1 |  SORT AGGREGATE    |          |     1 |     5 |            |          |
+|   2 |   TABLE ACCESS FULL| OBJ_SORT | 72912 |   356K|   295   (1)| 00:00:01 |
+-------------------------------------------------------------------------------
+
+
+14 rows selected.
+```
+Now that we've run a few queries on OBJ_SORT, let's see what the information in SYS.COL_USAGE$ looks like.
+```sql
+SQL> select * from sys.col_usage$
+  2  where obj# = (select object_id from user_objects where object_name = 'OBJ_SORT');
+
+no rows selected
+```
+Information regarding column usage isn't immediately flushed to SYS.COL_USAGE$ but instead is flushed periodically.  If we want to manually flush the information, we can run a DBMS_STATS procedure called FLUSH_DATABASE_MONITORING_INFO.
+```sql
+SQL> exec DBMS_STATS.FLUSH_DATABASE_MONITORING_INFO
+
+PL/SQL procedure successfully completed.
+
+SQL> select * from sys.col_usage$
+  2  where obj# = (select object_id from user_objects where object_name = 'OBJ_SORT');
+
+      OBJ#    INTCOL# EQUALITY_PREDS EQUIJOIN_PREDS NONEQUIJOIN_PREDS RANGE_PREDS LIKE_PREDS NULL_PREDS TIMESTAMP                FLAGS
+---------- ---------- -------------- -------------- ----------------- ----------- ---------- ---------- ------------------- ----------
+     77819          2              0              0                 0           0          1          0 03-19-2019 08:55:40         16
+```
+(Interesting that the LIKE_PREDS column is 1, even though we've run the query twice using two different values.  I suspect that when the statement was parsed, the optimizer converted the target of the LIKE clause to a bind variable.  The query hash plan value is the same in both cases, even though the target of the LIKE clause is different.)
+
+So now that we've queried the data a few times, let's see what happens when we run DBMS_STATS again on the OBJ_SORT table.
+```sql
+SQL> exec dbms_stats.gather_table_stats(user, 'OBJ_SORT')
+
+PL/SQL procedure successfully completed.
+
+SQL> SELECT column_name, num_distinct, histogram, last_analyzed, num_buckets, notes
+  2  FROM   user_tab_col_statistics;
+
+COLUMN_NAME                    NUM_DISTINCT HISTOGRAM       LAST_ANALYZED       NUM_BUCKETS NOTES
+------------------------------ ------------ --------------- ------------------- ----------- ------------------------
+OWNER                                    27 NONE            03-19-2019 08:57:35           1
+OBJECT_NAME                           60524 HYBRID          03-19-2019 08:57:35         254
+SUBOBJECT_NAME                          360 NONE            03-19-2019 08:57:35           1
+OBJECT_ID                             72909 NONE            03-19-2019 08:57:35           1
+DATA_OBJECT_ID                         5838 NONE            03-19-2019 08:57:35           1
+OBJECT_TYPE                              45 NONE            03-19-2019 08:57:35           1
+CREATED                                1649 NONE            03-19-2019 08:57:35           1
+LAST_DDL_TIME                          1892 NONE            03-19-2019 08:57:35           1
+TIMESTAMP                              1875 NONE            03-19-2019 08:57:35           1
+STATUS                                    1 NONE            03-19-2019 08:57:35           1
+
+10 rows selected.
+```
+We now see that histograms have been created on the OBJECT_NAME column.  Let's run the first query again and see what the execution plan now looks like.
+```sql
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_sort
+  4  WHERE object_name LIKE 'm%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+          5     167554
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+-------------------------------------------------------------------------------------------------------------
+SQL_ID  8cpfzmfj89nf7, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_sort WHERE object_name LIKE 'm%'
+
+Plan hash value: 1800199784
+
+----------------------------------------------------------------------------------------------------
+| Id  | Operation                            | Name        | Rows  | Bytes | Cost (%CPU)| Time     |
+----------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                     |             |       |       |    33 (100)|          |
+|   1 |  SORT AGGREGATE                      |             |     1 |    40 |            |          |
+|   2 |   TABLE ACCESS BY INDEX ROWID BATCHED| OBJ_SORT    |  1454 | 58160 |    33   (0)| 00:00:01 |
+|*  3 |    INDEX RANGE SCAN                  | IX_OBJ_SORT |  1454 |       |    12   (0)| 00:00:01 |
+----------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - access("OBJECT_NAME" LIKE 'm%')
+       filter("OBJECT_NAME" LIKE 'm%')
+
+
+22 rows selected.
+```
+It looks the same.  The original query is still cached, so the original plan is still being used (the plan hash values are the same).  We could flush the shared pool, but let's instead vary the query slightly by adding another space before the LIKE clause.  The optimizer will think this is a completely different query.
+```sql
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_sort
+  4  WHERE object_name  LIKE 'm%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+          5     167554
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+-------------------------------------------------------------------------------------------------------------
+SQL_ID  bpjcb5bhh3b8r, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_sort WHERE object_name  LIKE 'm%'
+
+Plan hash value: 1800199784
+
+----------------------------------------------------------------------------------------------------
+| Id  | Operation                            | Name        | Rows  | Bytes | Cost (%CPU)| Time     |
+----------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                     |             |       |       |     4 (100)|          |
+|   1 |  SORT AGGREGATE                      |             |     1 |    40 |            |          |
+|   2 |   TABLE ACCESS BY INDEX ROWID BATCHED| OBJ_SORT    |    53 |  2120 |     4   (0)| 00:00:01 |
+|*  3 |    INDEX RANGE SCAN                  | IX_OBJ_SORT |    53 |       |     3   (0)| 00:00:01 |
+----------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - access("OBJECT_NAME" LIKE 'm%')
+       filter("OBJECT_NAME" LIKE 'm%')
+
+
+22 rows selected.
+```
+Now the execution plan is different.  The cost is now 4 instead of 33 (though I'm not sure why the "Rows" column is 53 instead of 5).  Let's now rerun the second query, making a similar change so that the optimizer treats this query as a brand new query.
+```sql
+SQL> SELECT count(*) AS occurrences,
+  2         sum(object_id) AS total
+  3  FROM obj_sort
+  4  WHERE object_name  LIKE 'j%';
+
+OCCURRENCES      TOTAL
+----------- ----------
+       9972  432667620
+
+SQL>
+SQL> SELECT * FROM table(dbms_xplan.display_cursor);
+
+PLAN_TABLE_OUTPUT
+--------------------------------------------------------------------------------------------------------
+SQL_ID  9thvnm5nbwmay, child number 0
+-------------------------------------
+SELECT count(*) AS occurrences,        sum(object_id) AS total FROM
+obj_sort WHERE object_name  LIKE 'j%'
+
+Plan hash value: 1800199784
+
+----------------------------------------------------------------------------------------------------
+| Id  | Operation                            | Name        | Rows  | Bytes | Cost (%CPU)| Time     |
+----------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                     |             |       |       |   202 (100)|          |
+|   1 |  SORT AGGREGATE                      |             |     1 |    40 |            |          |
+|   2 |   TABLE ACCESS BY INDEX ROWID BATCHED| OBJ_SORT    |  9574 |   373K|   202   (0)| 00:00:01 |
+|*  3 |    INDEX RANGE SCAN                  | IX_OBJ_SORT |  9574 |       |    64   (0)| 00:00:01 |
+----------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   3 - access("OBJECT_NAME" LIKE 'j%')
+       filter("OBJECT_NAME" LIKE 'j%')
+
+
+22 rows selected.
+```
+The cost is now 202 instead of 33, indicating that the optimizer is now aware of the skew in OBJECT_NAME.  The cost is still less than the cost of doing a table scan (295 from our example above), so the optimizer will use the index even though the query has to physically look at about 14% of the rows in the table.
+
+What happens if we can't physically sort the data when we create the table in the order we want?  Perhaps the rows have already been physically sorted on another more important column.  I'll go through a similar exercise in Part 2 of this analysis.
+
+The information in my example is similar to (and not copied from) an Oracle Magazine article written by Tom Kyte (https://blogs.oracle.com/oraclemagazine/on-clustering-factor-and-validating-keys) in which he defines and explains the clustering factor.  I also benefited from information in the Oracle white paper "Best Practices for Gathering Optimizer Statistics with Oracle Database 12c Release 2" (https://www.oracle.com/technetwork/database/bi-datawarehousing/twp-bp-for-stats-gather-12c-1967354.pdf).
