@@ -48,7 +48,7 @@ def top_articles():
 
 top_articles()
 
-engine = create_engine('postgresql://postgres:budman01@localhost:5432/news')
+engine = create_engine('postgresql://postgres:xxxxxxxx@localhost:5432/news')
 
 dfarticles = pd.read_sql('select * from articles', engine)
 dflog = pd.read_sql('select * from log', engine)
