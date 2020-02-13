@@ -15,7 +15,7 @@ heatmap thus resembles a map of the city of Detroit.
 import pandas as pd
 import seaborn as sns
 
-url = "https://opendata.arcgis.com/datasets/5854b96be15b44f2a7ee85f2702790e7_0.csv"
+url = "https://opendata.arcgis.com/datasets/fe2f692918a04c13a6cead436e7eaec9_0.csv"
 
 df = pd.read_csv(url, low_memory=False)
 
