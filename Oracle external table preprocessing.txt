@@ -1,0 +1,225 @@
+## Oracle External Tables from Online CSV Files
+
+
+Having worked with the Python pandas library, I'm impressed by how easy it is to create a pandas dataframe (which closely resembles a two-dimensional table) from any comma-separated values (CSV) file that exists on a web site.  One way to do that is as follows:
+```sql
+import pandas as pd
+
+df = pd.read_csv("https://data.wa.gov/api/views/wxek-dsag/rows.csv")
+```
+If the first row in the CSV contains column names, the read_csv routine extracts and uses them as the dataframe column names.  It also takes a look at the data and automatically assigns a datatype to each column.
+
+I began to wonder if a similar capability existed in Oracle, whether it was possible to directly access an online CSV file, perhaps by doing something like this:
+```sql
+select * from url('https://data.wa.gov/api/views/wxek-dsag/rows.csv')
+```
+Well, I wasn't able to find anything that simple, but I learned how to use the Oracle external table preprocessing feature, first available in version 11.2, to read online CSV files.  This document describes what I did.
+
+My starting point is the Arup Nanda article "Preprocess External Tables" appearing in the March/April 2011 issue of Oracle Magazine.  The article first reviews the concept of external tables, then by using three examples it explains the concept behind preprocessing.  The third example uses the Windows "dir" command to create an external table containing directory information.  The article can be found here:
+
+https://blogs.oracle.com/oraclemagazine/preprocess-external-tables
+
+Any program that writes to standard output can be used as a source for the external table.
+
+First, I will try to use a simple Python program that prints several lines as a preprocessor.  Let's call the program threelines.py:
+```py
+print("First line of output")
+print("Second output line")
+print("Last line of output")
+```
+Since I'm using a Windows environment, I'll write a script (BAT) file that will call the Python interpreter to execute the program.  Let's call this file runpython.bat:
+```
+@echo off
+python threelines.py
+```
+Next, in my Oracle database environment, I defined a directory called test_dir.  For simplicity I will use this directory to store both the Python program and the BAT file.  Now I can create the external table.  In the following CREAT TABLE statement, I specify runpython.bat as the BAT file to run whenever a SELECT statement is run on the external table.  I still need to specify a filename in the LOCATION clause, and the file needs to exist in the test_dir directory, even though the file and its contents will not be used.
+
+```sql
+create table csv_table (
+  out_line  varchar2(3000)
+)
+organization external (
+  type              oracle_loader
+  default directory test_dir
+  access parameters (
+    records delimited  by newline
+    preprocessor test_dir:'runpython.bat'
+    fields  terminated by ','
+    missing field values are null
+  )
+  location ('unused.txt')
+)
+reject limit unlimited;
+```
+But when I try to SELECT from the external table, I get this error:
+```txt
+SQL> select * from csv_table;
+select * from csv_table
+*
+ERROR at line 1:
+ORA-29913: error in executing ODCIEXTTABLEFETCH callout
+ORA-29400: data cartridge error
+KUP-04095: preprocessor command C:\app\oracle\test_dir\runpython.bat encountered error "The system cannot execute the specified program.
+"
+```
+Either the bat file can't find the Python interpreter or it can't find runpython.py.  So I modified the BAT file to specify the full location of both the Python interpreter and threelines.py reside.  But now I get a different error:
+```txt
+SQL> /
+select * from csv_table
+*
+ERROR at line 1:
+ORA-29913: error in executing ODCIEXTTABLEFETCH callout
+ORA-29400: data cartridge error
+KUP-04095: preprocessor command C:\app\oracle\test_dir\runpython.bat encountered error "Fatal Python error: _Py_HashRandomization_Init: failed to get
+random numbers to initialize Python
+"
+```
+It took a while to figure out why this error was occurring.  Eventually I found a solution in one of Oracle expert Connor McDonald's blog posts:
+
+https://connor-mcdonald.com/2019/03/08/external-table-preprocessor-on-windows/
+
+"The issue here," Connor says, "is that many Windows programs require a minimum environment configuration before they will run. In this case, I need to let Windows know the location of the OS installation."  He solved the problem by adding
+```txt
+set SystemRoot=C:\WINDOWS
+```
+to his example BAT file.  Once I did that, the error disappeared and the SELECT statement returned the results from threelines.py:
+```txt
+SQL> select * from csv_table;
+
+OUT_LINE
+----------------------------------------------
+First line of output
+Second output line
+Last line of output
+```
+We can now specify a Python program as a source for an Oracle external table.  Let's now replace threelines.py with a Python program that accesses an online CSV file and returns each line to standard output:
+```sql
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Feb 13 13:18:04 2020
+
+@author: Jim
+
+Reading CSV files from a web site and writing each line to standard output.
+
+Based on: http://swcarpentry.github.io/web-data-python/02-csv/
+
+The CSV file used here contains high school dropout rates by county
+in Washington State during the 2012 - 2013 school year:
+
+https://data.wa.gov/Education/High-School-Dropout-Statistics-by-County-2012-2013/wxek-dsag
+
+"""
+
+import requests
+import csv
+
+url = 'https://data.wa.gov/api/views/wxek-dsag/rows.csv'
+response = requests.get(url)
+if response.status_code != 200:
+    print('Failed to get data:', response.status_code)
+else:
+    wrapper = csv.reader(response.text.strip().split('\n'))
+    for record in wrapper:
+        print(",".join(record))
+```
+The program will return 39 lines, each line containing five values separated by commas.  Let's recreate the external table to pick up the new columns:
+```sql
+create table csv_table (
+  county_name          varchar2(25),
+  total_dropouts       integer,
+  rank_by_number       integer,
+  cohort_dropout_rate  number(6,2),
+  rank_by_percent      integer
+)
+organization external (
+  type              oracle_loader
+  default directory test_dir
+  access parameters (
+    records delimited  by newline
+    skip 1
+    preprocessor test_dir:'runpython.bat'
+    fields  terminated by ','
+    missing field values are null
+  )
+  location ('unused.txt')
+)
+reject limit unlimited;
+```
+The first line of the CSV file contains column names, but for simplicity I've hard-coded column names and column datatypes, and also used a SKIP clause in the list of access parameters to skip the line containing column names.
+
+Now, when we select from the external table, we get results:
+```sql
+SQL> select * from csv_table;
+
+COUNTY_NAME               TOTAL_DROPOUTS RANK_BY_NUMBER COHORT_DROPOUT_RATE RANK_BY_PERCENT
+------------------------- -------------- -------------- ------------------- ---------------
+Adams                                 55             30               19.57              16
+Asotin                                70             28               23.65               9
+Benton                               371             10               14.61              27
+Chelan                               231             18               21.59              14
+Clallam                              971              4               51.05               2
+Clark                                876              6               15.09              25
+Columbia                               6             36               16.22              23
+Cowlitz                              239             17               17.63              19
+Douglas                               66             29               13.02              31
+Ferry                                  6             37                9.23              36
+Franklin                             265             14               22.27              12
+Garfield                               1             39                3.57              39
+Grant                                326             13               23.66               8
+Grays Harbor                         211             19               24.59               6
+Island                                78             26               11.73              35
+Jefferson                             31             31               14.62              26
+King                                2907              1               14.56              28
+Kitsap                               389              9               12.74              32
+Kittitas                              79             25                19.9              15
+Klickitat                             88             23               29.83               5
+Lewis                                247             15               23.37              11
+Lincoln                               10             35                5.99              38
+Mason                                101             22               17.21              20
+Okanogan                             132             20               23.91               7
+Pacific                              127             21               40.71               3
+Pend Oreille                          18             34               12.33              33
+Pierce                              1831              2               19.02              17
+San Juan                              20             33               16.67              21
+Skagit                               336             12               22.16              13
+Skamania                              75             27               53.19               1
+Snohomish                           1334              3               15.67              24
+Spokane                              853              7               14.47              29
+Stevens                              245             16               34.22               4
+Thurston                             518              8               16.65              22
+Wahkiakum                              5             38               13.16              30
+Walla Walla                           86             24               12.29              34
+Whatcom                              358             11               18.27              18
+Whitman                               28             32                8.24              37
+Yakima                               885              5               23.54              10
+
+39 rows selected.
+```
+This accomplishes what I set out to do.  I can directly access an online CSV file from an Oracle database using the external table preprocessing feature, in a relatively straightforward manner, without having to create any intermediate files.  Next I'll see if I can do something similar from a PostgreSQL database...
+
+### Notes:
+
+Credit is due to swcarpentry.github.io where I was able to find a Python program that accesses an online CSV file and returns every line with each column comma-delimited.
+
+Column names in CSV files can possibly contain special characters or embedded spaces.  Oracle can generally deal with such a column name if the column name is enclosed in double quotes.  For example:
+```txt
+SQL> create table foo ("This is a COLUmn?" varchar2(30));
+
+Table created.
+
+SQL> insert into foo values('Test');
+
+1 row created.
+
+SQL> select * from foo;
+
+This is a COLUmn?
+------------------------------
+Test
+```
+However, this requires any SELECT statement that accesses those columns to use double quotes and specify the exact same characters.
+
+My research indicates that the pandas read_csv function makes a pass through the CSV file to determine what datatype to assign to each column.  For this reason, as well as the previous note regarding column names, I made no attempt to automatically extract column names and datatypes from the CSV file.
+
+Arup Nanda's article refers to an Oracle White Paper called "Using the Preprocessor Feature with External Tables in Oracle Database 11g Release 2".  In its Best Practices section, it specifies that to avoid security issues the database administrator and the OS system manager work closely to set up the proper permissions on the directory and directory objects.
