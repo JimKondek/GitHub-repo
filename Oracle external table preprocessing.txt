@@ -92,7 +92,7 @@ First line of output
 Second output line
 Last line of output
 ```
-We can now specify a Python program as a source for an Oracle external table.  Let's now replace threelines.py with a Python program that accesses an online CSV file and returns each line to standard output:
+We can now specify a Python program as a source for an Oracle external table.  Let's now replace threelines.py with a Python program that accesses an online CSV file and returns each line to standard output.  (**Note:**  The file used here was from the Washington State data portal and as of mid 2021 is no longer publicly available.  However, the concepts shown here can be easily adapted to other online CSV files.)
 ```sql
 # -*- coding: utf-8 -*-
 """
