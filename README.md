@@ -1,6 +1,6 @@
 ### GitHub-repo
 
-This repository contains some simple examples of code and output that I've recently created.  All of these files are original work.  This README file describes each of the other files in the repository.
+This repository contains some simple examples of code and output that I've recently created, also several analyses.  All of these files are original work.  This README file describes each of the other files in the repository.
 
 **bubblesorttest.py, Bubble sort output** - As part of a technical job interview, the candidate is sometimes asked to write sample code to accomplish a common task.  This demonstrates that the candidate has some competency in the language used to write the sample code.  These two files represent my attempt to write a Python program that uses two slightly different techniques to "bubble sort" a Python list of ten thousand random numbers.  One technique skips list entries that have already been sorted.  Both techniques are timed and the results printed at the end of the program.  Both results are shown to be the same; the second technique is shown to be faster than the first.
 
