@@ -27,21 +27,22 @@ df['Lon'] = df['Longitude'].round(precision)
 df = df[df.Offense.str.contains('Motor Vehicle Theft', na=False)]
 df["StartDate"] = pd.to_datetime(df["Offense Start DateTime"])
 
+# Select data from 2011 through 2019
 df = df[(df.StartDate > "2011-01-01") & (df.StartDate < "2020-01-01")]
 
 # Get rid of data with zero longitude values.
 da = df[df.Lon != 0]
 
-# "City of Seattle Shoreline" available at the City of Seattle Open Data Portal
-# https://data.seattle.gov/
-# load seattle shape
-cities = gpd.read_file(r'c:\users\jim\seapets\Municipal_Boundaries.shp')
+# City of Seattle shoreline and city limits files available at the
+# City of Seattle Open Data Portal (https://data.seattle.gov/)
+# Load Seattle city limits shape
+cities = gpd.read_file(r'Municipal_Boundaries.shp')
 seattle = cities.loc[cities['CITYNAME'] == 'Seattle']
 seattle = seattle.reset_index()
 seattle_shp = seattle.loc[0, 'geometry']
 
-# load seattle waterfront shape
-waterfront = gpd.read_file(r'c:\users\jim\seapets\City_of_Seattle_Shoreline.shp')
+# Load Seattle waterfront shape
+waterfront = gpd.read_file(r'City_of_Seattle_Shoreline.shp')
 
 heatmap, xedges, yedges = np.histogram2d(da.Lon, da.Lat, bins=(150,200))
 extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
