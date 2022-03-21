@@ -24,4 +24,6 @@ This repository contains some simple examples of code and output that I've recen
 
 **Seattle Crime Heat Map.ipynb** - This is a Jupyter Notebook version that I created of the SeattleCrime.py program described above.  I took advantage of the MarkDown capabilities of Jupyter Notebooks to include more explanatory comments.
 
+**spellingbee.sql** - I figured out how to write an SQL statement that can be run against a table of English words and come up with solutions for the daily New York Times "Spelling Bee" word puzzle.  Details can be found in the comments of this file.
+
 **Week 2 Assignment** - This graph was the deliverable for the second weekly assignment in my "Applied Plotting, Charting and Data Representation in Python" course.  The assignment was to create a graph that would display the highest and lowest termperatures by day between 2005 and 2014 near Seattle, Washington, along with days in 2015 where the maximum or minimum were exceeded.  To create this graph I wrote Python code to call the matplotlib library using a Jupyter Notebook.
