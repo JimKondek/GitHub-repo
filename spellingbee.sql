@@ -68,4 +68,5 @@ AND NOT (
   OR word LIKE '%w%'
   OR word LIKE '%x%'
   OR word LIKE '%z%'
-  )ORDER BY word;
+)
+ORDER BY word;
