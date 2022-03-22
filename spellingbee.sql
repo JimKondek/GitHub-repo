@@ -37,6 +37,9 @@
 --     wordlength  INTEGER
 --   );
 --
+-- After loading this table, I delete all the rows where the wordlength is
+-- less than 4 or the word contains an "s".
+--
 -- This SELECT statement works in Oracle 19c and PostgreSQL 14.  The
 -- list of words was first loaded into a PostgreSQL 14 table using the
 -- psql \copy command, then pulled into an Oracle 19c table using
