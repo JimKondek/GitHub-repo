@@ -73,3 +73,79 @@ AND NOT (
   OR word LIKE '%z%'
 )
 ORDER BY word;
+
+Update: here is some interesting insight on some of the values stored in the "words" table:
+
+According to Spelling Bee rules, each word has to be made up of one or more of the seven letters provided in each day's puzzle.  A word such as "abridgement", which contains ten distinct characters, would never be a valid Spelling Bee word; thus words of eight or more distinct characters would not be needed in the "words" table.  Because the number of rows in the "words" table isn't that much (about 27000), there's little harm in keeping the rows with too-long words.  But if we wanted to delete the too-long words, how could we do it using SQL?
+
+PostgreSQL has a function called string_to_table() which will return a table with a row for every character in a string.  Here is an example:
+```sql
+postgres=# select string_to_table('PostgreSQL', null);
+ string_to_table
+-----------------
+ P
+ o
+ s
+ t
+ g
+ r
+ e
+ S
+ Q
+ L
+(10 rows)
+```
+The second parameter in the function is a delimiter character.  If null is specified, then one row is created for every character in the string (as in the above example).  In the next example, the character 'g' is used as a delimiter character:
+```sql
+postgres=# select string_to_table('PostgreSQL', 'g');
+ string_to_table
+-----------------
+ Post
+ reSQL
+(2 rows)
+```
+We can use the COUNT DISTINCT function to count the number of distinct characters in the string:
+```sql
+postgres=# select count(distinct string_to_table) from string_to_table('PostgreSQL', null);
+ count
+-------
+    10
+(1 row)
+```
+Going back to our "words" table, we can do something like this:
+```sql
+postgres=# select word, string_to_table(word, null) from words limit 20;
+    word    | string_to_table
+------------+-----------------
+ meme       | m
+ meme       | e
+ meme       | m
+ meme       | e
+ meze       | m
+ meze       | e
+ meze       | z
+ meze       | e
+ abandoning | a
+ abandoning | b
+ abandoning | a
+ abandoning | n
+ abandoning | d
+ abandoning | o
+ abandoning | n
+ abandoning | i
+ abandoning | n
+ abandoning | g
+ abba       | a
+ abba       | b
+(20 rows)
+```
+Here we create a table containing every word that contains more than seven distinct charaters.  
+```sql
+create table words_long as 
+  select word, count(distinct char) as number_of_distinct_chars
+  from (select word, string_to_table(word, null) as char
+        from words) as t1
+  group by word
+  having count(distinct char) > 7;
+```
+This table can be used in a "DELETE FROM words" statement.  I created such a statement using a WHERE EXISTS clause; I'll let you figure out how to do this.
